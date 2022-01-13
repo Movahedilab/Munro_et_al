@@ -1,0 +1,73 @@
+---
+title: "JP32 (ActD CP mouse): BAM PC20, res=1"
+output: html_notebook
+date: 'Created on: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+  
+
+```{r}
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(clustree))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(VennDiagram))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(harmony))
+```
+
+
+```{r}
+path<-"/path/to/working_dir"
+sample.names<-c("JP32")
+subset.name<-"BAM"
+source("~/Documents/scripts/preprosessing_May.2020.R")
+gene.markers<-read.csv("~/Documents/gene_protein_lists/markergenes_mouse.csv")
+cols.use=c("brown1","goldenrod3","goldenrod1","darkorchid","mediumpurple","darkolivegreen1","magenta","dodgerblue","turquoise3","lightblue","gold4","coral","violetred","grey","green3","goldenrod1","palevioletred", "seagreen", "red","yellow", "brown3", "grey30", "pink", "bisque", "yellowgreen", "grey30")
+dims.use=20
+res=1
+```
+
+```{r}
+seur<-readRDS(paste0(path,subset.name,sample.names,".seurat.rds"))
+```
+
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "full.dataset.annot",label=T, repel=T,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": annotation from full dataset"))
+```
+
+```{r}
+Idents(seur)= paste0("RNA_snn_PC",dims.use,"_res.",res)
+```
+
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur,label=T, repel=T,reduction=paste0("umapPC",dims.use))+   ggtitle(paste("PC =",dims.use,"res=",res))
+```
+```{r , fig.height = 4, fig.width =10}
+DotPlot(seur,features=c( "Sparc","Sall1","P2ry12","Tmem119","Ms4a7","Pf4", "Ly6c2","Plac8", "Fn1","Ccr2","Ear2","Ace",  "Ly6g","S100a8","Flt3","Cd209a","Xcr1","Clec9a","Ccr7","Cacnb3","Siglech","Pacsin1", "Mki67","Stmn1","Cd3e", "Trac","Cd8a", "Klrb1c","Ncr1","Cd19","Ms4a1", "Kdr","Ly6c1","Col1a1","Col1a2" , "perc.mito"))+RotatedAxis()
+```
+```{r}
+Idents(seur)= plyr::mapvalues(Idents(seur), from = 1:10, to =c("BAM","BAM","BAM","BAM","CPepi BAM","BAM","BAM prolif","BAM","BAM","Mono"))
+seur$annot.BAM=Idents(seur)
+```
+
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur,label=T, repel=T,reduction=paste0("umapPC",dims.use))
+```
+
+```{r , fig.height = 6, fig.width = 14,warning=FALSE}
+FeaturePlot(object = seur,features = c("Sall1","Serpine2","Slc2a5","P2ry12","Ms4a7", "Clec12a","H2-Aa","Mrc1"),reduction=paste0("umapPC",dims.use), ncol=4)
+```
+
+```{r}
+saveRDS(seur,paste0(path,subset.name,".",sample.names,".seurat.rds"))
+```
+```{r}
+seur<-readRDS(paste0(path,subset.name,".",sample.names,".seurat.rds"))
+```
+
+
+
+```{r,warning=FALSE}
+sessionInfo()
+```
+

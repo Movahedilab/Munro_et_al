@@ -1,0 +1,391 @@
+---
+title: "JP32 (ActD CP mouse): BAM reclustering"
+output: html_notebook
+date: 'Created on: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+  
+
+```{r}
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(clustree))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(VennDiagram))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(harmony))
+```
+
+
+```{r}
+path<-"/path/to/working_dir"
+sample.names<-c("JP32")
+subset.name<-"BAM"
+source("~/Documents/scripts/preprosessing_May.2020.R")
+gene.markers<-read.csv("~/Documents/gene_protein_lists/markergenes_mouse.csv")
+cols.use=c("brown1","goldenrod3","goldenrod1","darkorchid","mediumpurple","darkolivegreen1","magenta","dodgerblue","turquoise3","lightblue","gold4","coral","violetred","grey","green3","goldenrod1","palevioletred", "seagreen", "red","yellow", "brown3", "grey30", "pink", "bisque", "yellowgreen", "grey30")
+```
+
+```{r}
+seur_full<-readRDS(paste0(path,sample.names,".seurat.no.doublets.rds"))
+```
+
+
+```{r , fig.height = 6, fig.width = 10,warning=FALSE}
+DimPlot(seur_full,label=T, repel=T,cols=cols.use, group.by = "annot",reduction = "umapPC30")+ggtitle( "Full dataset  : annotation")
+```
+```{r , fig.height = 6, fig.width = 10,warning=FALSE}
+DimPlot(seur_full,label=T, repel=T,cols=cols.use, group.by = "Manuscript_cell_type",reduction = "umapPC30")+ggtitle("Full dataset  : Manuscript cell types")
+```
+
+#### Subset BAMs
+```{r,warning=FALSE}
+Idents(seur_full)="annot"
+clusters<-c(paste("BAM", 1:5), "BAM prolif","CPepi 1","CPepi 2" , "Mono" )
+clusters[!clusters %in% Idents(seur_full)] #check if some of the cluster names is not correct
+```
+Subset the cells
+```{r,warning=FALSE}
+seur<-seur_full[,WhichCells(seur_full, idents=clusters)]
+seur$full.dataset.annot=Idents(seur)
+```
+
+
+Remove genes that are not expressed in any cell
+```{r,warning=FALSE}
+num.cells.per.gene <- rowSums(as.matrix(GetAssayData(seur, slot = "counts")) > 0)
+  genes.use <- names(num.cells.per.gene[which(num.cells.per.gene >= 1)])
+  seur<-subset(seur,features=genes.use)
+```
+```{r,warning=FALSE}
+cat("genes/cells of full data : \n",dim(seur_full))
+cat("\ngenes/cells of subset : \n",dim(seur))
+```
+
+#### Standard preprocessing and UMAP of the subsetted dataset (Selecting variable genes, scaling, PCA, UMAP )
+```{r,warning=FALSE}
+seur <- NormalizeData(seur,verbose = F)
+seur <- FindVariableFeatures(seur,verbose=F)
+seur <- ScaleData(seur,verbose = F)
+seur <- RunPCA(seur, features = VariableFeatures(seur),verbose=F)
+```
+```{r , fig.height = 4, fig.width = 10,warning=FALSE}
+ElbowPlot(object = seur,ndims =50)
+```
+
+
+
+### PC 1:10
+```{r,warning=FALSE}
+dims.use=10
+```
+```{r,warning=FALSE}
+seur <- RunUMAP(seur, dims = 1:dims.use, verbose=F,reduction.name =paste0("umapPC",dims.use),reduction.key =paste0("umapPC",dims.use,"_"))
+```
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "Manuscript_cell_type",label=T, repel=T,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": Manuscript cell types"))
+```
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "full.dataset.annot",label=T, repel=T,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": annotation from full dataset"))
+```
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "singler.immgen.main",label=T, repel=T, cols=cols.use,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": singler.immgen.main"))
+```
+
+```{r , fig.height =8, fig.width =12,warning=FALSE}
+FeaturePlot(seur, c("Ly6c2","Ccr2","Ms4a7","Ear2","Ace","Sparc","P2ry12","Cst7", "Cd3e", "Mki67", "Mcm5", "Mcm3"),reduction=paste0("umapPC",dims.use)) 
+```
+
+
+
+#### Clustering with Leiden algorithm
+
+```{r ,warning=FALSE}
+seur <- FindNeighbors(seur, dims = 1:dims.use, verbose=F,graph.name =paste0("RNA_snn_PC",dims.use))
+for ( i in seq(0,2, 0.25))
+seur <- FindClusters(seur, resolution = i, verbose=F, algorithm = 4,graph.name =paste0("RNA_snn_PC",dims.use))
+# algorithm= 4 is Leiden algorithm - often performs better
+```
+
+Plot of a clustering tree showing the relationship between clusterings at different resolutions. (using the clustree package)
+```{r , fig.height = 6, fig.width = 8,warning=FALSE}
+clustree(seur, prefix = paste0("RNA_snn_PC",dims.use,"_res.")) +
+ ggtitle(paste(subset.name,": Clustering tree PC=", dims.use))
+```
+
+```{r , fig.height = 7, fig.width =10,warning=FALSE}
+plot<-list()
+for ( res in c(0.5, 0.75,1,1.25))
+plot[[as.character(res)]]<-DimPlot(seur, pt.size = 1,label=T,repel=T, group.by = paste0("RNA_snn_PC",dims.use,"_res.",res),reduction=paste0("umapPC",dims.use)) +
+   ggtitle(paste("PC =",dims.use,"res=",res))
+plot_grid(plotlist=plot)
+```
+### Let's find differentially expressed genes per cluster
+
+```{r,warning=FALSE}
+res=0.75
+Idents(seur)=  paste0("RNA_snn_PC",dims.use,"_res.",res)
+```
+```{r,warning=FALSE, echo=FALSE}
+DEgenes_list<-list()
+for ( i in levels(Idents(seur))){
+DEgenes_list[[i]]<-  find.markers.detailed(seur,ident.1.use=i, dataset.name=paste(sample.names, subset.name),min.cells.group.use=2, pseudocount = 0.1)
+}
+saveRDS(DEgenes_list, paste0( path,"DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".rds"))
+```
+
+```{r,warning=FALSE}
+res=0.75
+dims.use=10
+DEgenes_list <- readRDS( paste0( path,"DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".rds"))
+```
+
+```{r , fig.height =6, fig.width =10,warning=FALSE}
+features.use=unlist(lapply(DEgenes_list, function(x) { head(x[x$avg_logFC>0,]$gene)}))
+DoHeatmap(seur, features = features.use, assay = "RNA", angle = 90, label =T, size=4) +
+  scale_fill_gradient2(low = "blue", mid = "white",high = "red")+
+  theme(axis.text.y= element_text(size=11))+
+  ggtitle(paste(" res=",res, " PC= ", dims.use))
+```
+
+
+```{r , fig.height = 4, fig.width = 5,warning=FALSE}
+DimPlot(object = seur,label=T, repel=T, reduction=paste0("umapPC",dims.use))+ggtitle(paste(" res=",res, " PC= ", dims.use))
+```
+
+```{r,warning=FALSE}
+### Save as excel table
+setwd(path)
+first_sheet_name<-names(DEgenes_list)[1]
+#JAVA specific garbage collection 
+jgc <- function() {
+  rJava::.jcall("java/lang/System", method = "gc")
+ } 
+#Create the excel file and add the first sheet
+write.xlsx2(DEgenes_list[[first_sheet_name]], file=paste0("DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".xlsx"), sheetName=first_sheet_name, row.names=FALSE)
+#Add the remaining sheets tot he excel file
+for ( i in names(DEgenes_list)[names(DEgenes_list)!=first_sheet_name]) {
+  gc()
+  jgc()
+  message("Adding sheet ", i)
+  write.xlsx2(DEgenes_list[[i]], file=paste0("DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".xlsx"), sheetName=i, append=TRUE, row.names=FALSE)
+}
+```
+
+
+---
+
+
+### PC 1:15
+```{r,warning=FALSE}
+dims.use=15
+```
+```{r,warning=FALSE}
+seur <- RunUMAP(seur, dims = 1:dims.use, verbose=F,reduction.name =paste0("umapPC",dims.use),reduction.key =paste0("umapPC",dims.use,"_"))
+```
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "Manuscript_cell_type",label=T, repel=T,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": Manuscript cell types"))
+```
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "full.dataset.annot",label=T, repel=T,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": annotation from full dataset"))
+```
+
+
+#### Clustering with Leiden algorithm
+
+```{r ,warning=FALSE}
+seur <- FindNeighbors(seur, dims = 1:dims.use, verbose=F,graph.name =paste0("RNA_snn_PC",dims.use))
+for ( i in seq(0,2, 0.25))
+seur <- FindClusters(seur, resolution = i, verbose=F, algorithm = 4,graph.name =paste0("RNA_snn_PC",dims.use))
+# algorithm= 4 is Leiden algorithm - often performs better
+```
+
+Plot of a clustering tree showing the relationship between clusterings at different resolutions. (using the clustree package)
+```{r , fig.height = 6, fig.width = 8,warning=FALSE}
+clustree(seur, prefix = paste0("RNA_snn_PC",dims.use,"_res.")) +
+ ggtitle(paste(subset.name,": Clustering tree PC=", dims.use))
+```
+
+```{r , fig.height = 7, fig.width =10,warning=FALSE}
+plot<-list()
+for ( res in c(0.5, 0.75,1,1.25))
+plot[[as.character(res)]]<-DimPlot(seur, pt.size = 1,label=T,repel=T, group.by = paste0("RNA_snn_PC",dims.use,"_res.",res),reduction=paste0("umapPC",dims.use)) +
+     ggtitle(paste("PC =",dims.use,"res=",res))
+plot_grid(plotlist=plot)
+```
+
+
+Visualize the same clusterings on UMAP with 10 PC
+```{r , fig.height = 8, fig.width =10,warning=FALSE}
+plot<-list()
+for ( res in c(0.5, 0.75,1,1.25))
+plot[[as.character(res)]]<-DimPlot(seur,label=T,repel=T, group.by = paste0("RNA_snn_PC",dims.use,"_res.",res),  reduction=  paste0("umapPC10")) +
+   ggtitle(paste("PC =",dims.use,"res=",res))
+plot_grid(plotlist=plot)
+```
+
+### Let's find differentially expressed genes per cluster
+
+```{r,warning=FALSE}
+res=0.75
+Idents(seur)=  paste0("RNA_snn_PC",dims.use,"_res.",res)
+```
+```{r,warning=FALSE, echo=FALSE}
+DEgenes_list<-list()
+for ( i in levels(Idents(seur))){
+DEgenes_list[[i]]<-  find.markers.detailed(seur,ident.1.use=i, dataset.name=paste(sample.names, subset.name),min.cells.group.use=2, pseudocount = 0.1)
+}
+saveRDS(DEgenes_list, paste0( path,"DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".rds"))
+```
+
+```{r,warning=FALSE}
+res=0.75
+dims.use=15
+DEgenes_list <- readRDS( paste0( path,"DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".rds"))
+```
+
+
+```{r , fig.height =6, fig.width =10,warning=FALSE}
+features.use=unlist(lapply(DEgenes_list, function(x) { head(x[x$avg_logFC>0,]$gene)}))
+DoHeatmap(seur, features = features.use, assay = "RNA", angle = 90, label =T, size=4) +
+  scale_fill_gradient2(low = "blue", mid = "white",high = "red")+
+  theme(axis.text.y= element_text(size=11))+
+  ggtitle(paste(" res=",res, " PC= ", dims.use))
+```
+
+```{r , fig.height = 4, fig.width = 5,warning=FALSE}
+DimPlot(object = seur,label=T, repel=T, reduction=paste0("umapPC",dims.use))+ggtitle(paste(" res=",res, " PC= ", dims.use))
+```
+```{r,warning=FALSE}
+### Save as excel table
+setwd(path)
+first_sheet_name<-names(DEgenes_list)[1]
+#JAVA specific garbage collection 
+jgc <- function() {
+  rJava::.jcall("java/lang/System", method = "gc")
+ } 
+#Create the excel file and add the first sheet
+write.xlsx2(DEgenes_list[[first_sheet_name]], file=paste0("DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".xlsx"), sheetName=first_sheet_name, row.names=FALSE)
+#Add the remaining sheets tot he excel file
+for ( i in names(DEgenes_list)[names(DEgenes_list)!=first_sheet_name]) {
+  gc()
+  jgc()
+  message("Adding sheet ", i)
+  write.xlsx2(DEgenes_list[[i]], file=paste0("DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".xlsx"), sheetName=i, append=TRUE, row.names=FALSE)
+}
+```
+
+---
+
+### PC 1:20
+```{r,warning=FALSE}
+dims.use=20
+```
+```{r,warning=FALSE}
+seur <- RunUMAP(seur, dims = 1:dims.use, verbose=F,reduction.name =paste0("umapPC",dims.use),reduction.key =paste0("umapPC",dims.use,"_"))
+```
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "Manuscript_cell_type",label=T, repel=T,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": Manuscript cell types"))
+```
+```{r , fig.height = 4, fig.width = 7,warning=FALSE}
+DimPlot(object = seur, group.by = "full.dataset.annot",label=T, repel=T,reduction=paste0("umapPC",dims.use))+ggtitle(paste(subset.name,": annotation from full dataset"))
+```
+
+
+#### Clustering with Leiden algorithm
+
+```{r ,warning=FALSE}
+seur <- FindNeighbors(seur, dims = 1:dims.use, verbose=F,graph.name =paste0("RNA_snn_PC",dims.use))
+for ( i in seq(0,2, 0.25))
+seur <- FindClusters(seur, resolution = i, verbose=F, algorithm = 4,graph.name =paste0("RNA_snn_PC",dims.use))
+# algorithm= 4 is Leiden algorithm - often performs better
+```
+
+Plot of a clustering tree showing the relationship between clusterings at different resolutions. (using the clustree package)
+```{r , fig.height = 6, fig.width = 8,warning=FALSE}
+clustree(seur, prefix = paste0("RNA_snn_PC",dims.use,"_res.")) +
+ ggtitle(paste(subset.name,": Clustering tree PC=", dims.use))
+```
+
+```{r , fig.height = 7, fig.width =10,warning=FALSE}
+plot<-list()
+for ( res in c(0.5, 0.75,1,1.25))
+plot[[as.character(res)]]<-DimPlot(seur, pt.size = 1,label=T,repel=T, group.by = paste0("RNA_snn_PC",dims.use,"_res.",res),reduction=paste0("umapPC",dims.use)) +
+   ggtitle(paste("PC =",dims.use,"res=",res))
+plot_grid(plotlist=plot)
+```
+
+Visualize the same clusterings on UMAP with 10 PC
+```{r , fig.height = 8, fig.width =10,warning=FALSE}
+plot<-list()
+for ( res in c(0.5, 0.75,1,1.25))
+plot[[as.character(res)]]<-DimPlot(seur,label=T,repel=T, group.by = paste0("RNA_snn_PC",dims.use,"_res.",res),  reduction=  paste0("umapPC10")) +
+   ggtitle(paste("PC =",dims.use,"res=",res))
+plot_grid(plotlist=plot)
+```
+
+### Let's find differentially expressed genes per cluster
+
+```{r,warning=FALSE}
+res=1
+Idents(seur)=  paste0("RNA_snn_PC",dims.use,"_res.",res)
+```
+```{r,warning=FALSE, echo=FALSE}
+DEgenes_list<-list()
+for ( i in levels(Idents(seur))){
+DEgenes_list[[i]]<-  find.markers.detailed(seur,ident.1.use=i, dataset.name=paste(sample.names, subset.name),min.cells.group.use=2, pseudocount = 0.1)
+}
+saveRDS(DEgenes_list, paste0( path,"DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".rds"))
+```
+
+```{r,warning=FALSE}
+res=1
+dims.use=10
+DEgenes_list <- readRDS( paste0( path,"DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".rds"))
+```
+
+```{r , fig.height =7, fig.width =10,warning=FALSE}
+features.use=unlist(lapply(DEgenes_list, function(x) { head(x[x$avg_logFC>0,]$gene)}))
+DoHeatmap(seur, features = features.use, assay = "RNA", angle = 90, label =T, size=4) +
+  scale_fill_gradient2(low = "blue", mid = "white",high = "red")+
+  theme(axis.text.y= element_text(size=10))+
+  ggtitle(paste(" res=",res, " PC= ", dims.use))
+```
+
+
+```{r,warning=FALSE}
+### Save as excel table
+setwd(path)
+first_sheet_name<-names(DEgenes_list)[1]
+#JAVA specific garbage collection 
+jgc <- function() {
+  rJava::.jcall("java/lang/System", method = "gc")
+ } 
+#Create the excel file and add the first sheet
+write.xlsx2(DEgenes_list[[first_sheet_name]], file=paste0("DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".xlsx"), sheetName=first_sheet_name, row.names=FALSE)
+#Add the remaining sheets tot he excel file
+for ( i in names(DEgenes_list)[names(DEgenes_list)!=first_sheet_name]) {
+  gc()
+  jgc()
+  message("Adding sheet ", i)
+  write.xlsx2(DEgenes_list[[i]], file=paste0("DEgenes.res",res,"_","PC",dims.use,"_",subset.name,"_",sample.names,".xlsx"), sheetName=i, append=TRUE, row.names=FALSE)
+}
+```
+
+
+```{r}
+saveRDS(seur,paste0(path,subset.name,sample.names,".seurat.rds"))
+```
+```{r}
+seur<-readRDS(paste0(path,subset.name,sample.names,".seurat.rds"))
+```
+
+
+
+```{r,warning=FALSE}
+sessionInfo()
+```
+
+
+
+
+

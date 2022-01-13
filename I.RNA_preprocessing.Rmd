@@ -1,0 +1,871 @@
+---
+title: "JP32 (ActD CP mouse) RNA preprocessing"
+output: html_notebook
+date: 'Created on: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+
+```{r}
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(SingleR))
+suppressPackageStartupMessages(library(scater))
+suppressPackageStartupMessages(library(scran))
+suppressPackageStartupMessages(library(clustree))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(VennDiagram))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(cowplot))
+```
+ 
+
+```{r}
+# increase heap size of java for handling java.lang.OutOfMemoryError while writing to excel file. The value 8000 is the number of megabytes of RAM to allow for the Java heap; it can be replaced with any value you like
+options(java.parameters =c("-XX:+UseConcMarkSweepGC", "-Xmx30000m"))
+path<-"/path/to/working_dir"
+sample.names<-c("JP32")
+metadata=read.csv(paste0(path,"data/annot_JP3233.csv"))
+source("~/Documents/scripts/preprosessing_May.2020.R")
+gene.markers<-read.csv("~/Documents/gene_protein_lists/markergenes_mouse.csv")
+cols.use=c("brown1","goldenrod3","goldenrod1","darkorchid","mediumpurple","darkolivegreen1","magenta","dodgerblue","turquoise3","lightblue","gold4","coral","violetred","grey","green3","goldenrod1","palevioletred", "seagreen", "red","yellow", "brown3", "grey30", "pink", "bisque", "yellowgreen", "grey30","lightgreen","lightblue","violet","purple")
+```
+
+
+Read in the raw unfiltered data to SingleCellExperiment R object
+```{r}
+sce=list()
+for ( sample in sample.names) {
+expr.mat <- Read10X(paste0(path,"data/",sample,"/outs/filtered_feature_bc_matrix"))
+sce[[sample]]<-SingleCellExperiment(assays=list(counts=expr.mat))
+print(sample)
+print(dim(sce[[sample]]))
+}
+rm(expr.mat)
+```
+
+
+Get mitochondrial genes and calculate QC metrics per cell
+```{r,warning=FALSE}
+is.mito <-grepl("^mt-",rownames(sce[[1]]))
+sum(is.mito)
+```
+
+```{r,warning=FALSE}
+for ( sample in sample.names) {
+  is.mito <-grepl("^mt-",rownames(sce[[sample]]))
+  sce[[sample]] <- addPerCellQC(sce[[sample]], subsets=list(Mt=is.mito), flatten=T)
+  sce[[sample]]$staticNr<-1
+  sce[[sample]]$nGene<-apply(counts(sce[[sample]]),  2,  function(x) length(x[x > 0]))
+}
+```
+
+
+#### Find outliers for total UMI counts, number of genes and % mitohondrial genes per cell based on the median absolute deviation (MAD) (scater function)
+- UMI counts per cell
+```{r,warning=FALSE}
+for ( sample in sample.names) {
+sce[[sample]]$nUMI.outlier.low <- isOutlier(sce[[sample]]$total, nmads=3, type="lower", log=TRUE)
+cat("\n" , sample)
+cat("\nOutliers:",sum(sce[[sample]]$nUMI.outlier.low))
+}
+```
+
+```{r , fig.height = 3.5, fig.width = 10,warning=FALSE}
+for ( sample in sample.names) {
+hist(sce[[sample]]$total,
+    breaks = 100,
+    main=paste0(sample,": total UMI counts per cell"))
+abline(v = max(sce[[sample]]$total[sce[[sample]]$nUMI.outlier.low]), col = "red")
+ }
+```
+
+
+```{r , fig.height = 3.5, fig.width = 10,warning=FALSE}
+for ( sample in sample.names) {
+print(ggplot(as.data.frame(colData(sce[[sample]])), aes(staticNr, total)) + 
+  geom_violin(fill="gray80") + 
+  geom_jitter(height = 0, width = 0.3, aes(col=nUMI.outlier.low)) +
+  scale_color_manual(values=c("#00BFC4", "#F8766D"))+ggtitle(paste(sample,": Total UMI counts per cell")))
+}
+```
+
+- Number of genes per cell
+```{r,warning=FALSE}
+for ( sample in sample.names) {
+sce[[sample]]$nGene.outlier.low <- isOutlier(sce[[sample]]$nGene, nmads=3, type="lower", log=TRUE)
+cat("\n" , sample)
+cat("\nOutliers:",sum(sce[[sample]]$nGene.outlier.low))
+}
+```
+
+```{r , fig.height = 3.5, fig.width = 10,warning=FALSE}
+  for ( sample in sample.names) {
+hist(sce[[sample]]$nGene,
+    breaks = 100,
+    main=paste0(sample,": number of genes per cell"))
+abline(v = max(sce[[sample]]$nGene[sce[[sample]]$nGene.outlier.low]), col = "red")
+ }
+```
+
+```{r , fig.height = 3.5, fig.width = 10,warning=FALSE}
+for ( sample in sample.names) {
+print(ggplot(as.data.frame(colData(sce[[sample]])), aes(staticNr, nGene)) + 
+  geom_violin(fill="gray80") + 
+  geom_jitter(height = 0, width = 0.3, aes(col=nGene.outlier.low)) +
+  scale_color_manual(values=c("#00BFC4", "#F8766D"))+ggtitle(paste(sample,":Number of genes per cell")))
+}
+```
+
+- % mitohondrial genes per cell
+```{r,warning=FALSE}
+for ( sample in sample.names) {
+sce[[sample]]$mito.outlier.high <- isOutlier(sce[[sample]]$subsets_Mt_percent, nmads=3, type="higher", log=TRUE)
+cat("\n" , sample)
+cat("\nOutliers:",sum(sce[[sample]]$mito.outlier.high))
+}
+```
+```{r , fig.height = 3.5, fig.width = 10,warning=FALSE}
+    for ( sample in sample.names) {
+hist(sce[[sample]]$subsets_Mt_percent,
+    breaks = 100,
+    main=paste0(sample,": number of % mito genes per cell"))
+abline(v = min(sce[[sample]]$subsets_Mt_percent[sce[[sample]]$mito.outlier.high]), col = "red")
+ }
+```
+
+
+```{r , fig.height = 3.5, fig.width = 8,warning=FALSE}
+for ( sample in sample.names) {
+print(ggplot(as.data.frame(colData(sce[[sample]])), aes(staticNr, subsets_Mt_percent)) + 
+  geom_violin(fill="gray80") + 
+  geom_jitter(height = 0, width = 0.3, aes(col=mito.outlier.high)) +
+  scale_color_manual(values=c("#00BFC4", "#F8766D"))+ggtitle(paste(sample,":% mito genes per cell")))
+}
+```
+
+#### Overlap of cells, outliers for UMI counts, # genes and % mitochodrial genes per cell
+```{r ,warning=FALSE}
+for ( sample in sample.names) {
+v <-venn.diagram(
+  list (UMI=rownames(colData(sce[[sample]])[sce[[sample]]$nUMI.outlier.low,]),
+        gene=rownames(colData(sce[[sample]])[sce[[sample]]$nGene.outlier.low,]),
+    mito=rownames(colData(sce[[sample]])[sce[[sample]]$mito.outlier.high,])),
+  filename=NULL,
+  alpha = c( 0.5,0.5,0.5),
+  fill = c("green","orange","blue"), main = sample
+)
+grid.newpage()
+grid.draw(v)
+}
+rm(v)
+```
+
+
+
+### Filter the outlier cells
+```{r,warning=FALSE}
+for ( sample in sample.names) {
+print(sample)
+cells.to.keep= ! (sce[[sample]]$mito.outlier.high | sce[[sample]]$nGene.outlier.low | sce[[sample]]$nUMI.outlier.low)
+print(paste(dim(sce[[sample]])[2]- 
+            dim(sce[[sample]][,cells.to.keep])[2],
+     "cells to be removed"))
+}
+```
+
+#### Violin plots after filtering
+```{r , fig.height = 3.5, fig.width = 8,warning=FALSE}
+for ( sample in sample.names) {
+cells.to.keep= ! (sce[[sample]]$mito.outlier.high | sce[[sample]]$nGene.outlier.low | sce[[sample]]$nUMI.outlier.low)
+print(ggplot(as.data.frame(colData(sce[[sample]])[cells.to.keep, ]), aes(staticNr, total)) + 
+  geom_violin(fill="gray80") + 
+  geom_jitter(height = 0, width = 0.3, aes(col=nUMI.outlier.low)) +
+  scale_color_manual(values=c("#00BFC4", "#F8766D"))+ggtitle(paste(sample,":Total UMI counts per cell")))
+}
+for ( sample in sample.names) {
+cells.to.keep= ! (sce[[sample]]$mito.outlier.high | sce[[sample]]$nGene.outlier.low | sce[[sample]]$nUMI.outlier.low)
+print(ggplot(as.data.frame(colData(sce[[sample]])[ cells.to.keep, ]), aes(staticNr, nGene)) + 
+  geom_violin(fill="gray80") + 
+  geom_jitter(height = 0, width = 0.3, aes(col=nUMI.outlier.low)) +
+  scale_color_manual(values=c("#00BFC4", "#F8766D"))+ggtitle(paste(sample,":Total UMI counts per cell")))
+}
+for ( sample in sample.names) {
+cells.to.keep= ! (sce[[sample]]$mito.outlier.high | sce[[sample]]$nGene.outlier.low | sce[[sample]]$nUMI.outlier.low)
+print(ggplot(as.data.frame(colData(sce[[sample]])[cells.to.keep, ]), aes(staticNr, subsets_Mt_percent)) + 
+  geom_violin(fill="gray80") + 
+  geom_jitter(height = 0, width = 0.3, aes(col=mito.outlier.high)) +
+  scale_color_manual(values=c("#00BFC4", "#F8766D"))+ggtitle(paste(sample,":% mito genes per cell")))
+}
+```
+Number of genes/cells after filtering
+```{r,warning=FALSE}
+sce_clean=list()
+for ( sample in sample.names) {
+  cells.to.keep= ! (sce[[sample]]$mito.outlier.high | sce[[sample]]$nGene.outlier.low | sce[[sample]]$nUMI.outlier.low)
+  sce_clean[[sample]]<-sce[[sample]][, cells.to.keep]
+  print(sample)
+  print(dim(sce_clean[[sample]]))
+}
+```
+
+#### Filter the lowly abundant genes
+To check whether the chosen threshold is suitable, we examine the distribution of log-means across all genes. The peak represents the bulk of moderately expressed genes while the rectangular component corresponds to lowly expressed genes. The filter threshold should cut the distribution at some point along the rectangular component to remove the majority of low-abundance genes.
+
+```{r,warning=FALSE}
+ave.counts=list()
+for ( sample in sample.names) {
+ ave.counts[[sample]] <- rowMeans(as.matrix(counts(sce_clean[[sample]])))
+}
+```
+```{r , fig.height = 4, fig.width = 10,warning=FALSE}
+thresh<-c(0.006)
+for ( i in 1: length(sample.names)) {
+  hist(log10(ave.counts[[sample.names[i]]]), breaks=100, main=sample.names[i], col="grey80",
+     xlab=expression(Log[10]~"mean count per gene"))
+  abline(v=log10(thresh[i]), col="blue", lwd=2, lty=2)
+}
+```
+Number of genes to keep
+```{r,warning=FALSE}
+for ( i in 1: length(sample.names)) {
+    print(sample.names[i])
+    rowData(sce_clean[[sample.names[i]]])$usegenes<-ave.counts[[sample.names[i]]]>thresh[i]
+    print(table(rowData(sce_clean[[sample.names[i]]])$usegenes))
+}
+```
+Remove outlier genes and re-calculate QC metrics after filtering
+```{r,warning=FALSE}
+for ( sample in sample.names) {
+  sce_clean[[sample]]<-sce_clean[[sample]][rowData(sce_clean[[sample]])$usegenes, ]
+  is.mito <-grepl("^mt-",rownames(sce_clean[[sample]]))
+  sce_clean[[sample]] <- addPerCellQC(sce_clean[[sample]], subsets=list(Mt=is.mito), flatten=T)
+}
+sum(is.mito)
+```
+
+
+Doubletcells() - identifying doublets at a cell level, by simulating artificial doublets (scran function)
+```{r ,warning=FALSE}
+for ( sample in sample.names) {
+sce_clean[[sample]]$Doublet.score.scran<- doubletCells(sce_clean[[sample]])
+}
+```
+
+```{r,warning=FALSE}
+for ( sample in sample.names) {
+  if(!identical(rownames(colData(sce_clean[[sample]])),colnames(counts(sce_clean[[sample]]))))
+   print(paste(sample, ": cell names are not the same in colData and in the count matrix"))
+}
+```
+
+Convert to Seurat object
+```{r,warning=FALSE}
+seur_clean=list()
+for ( sample in sample.names) {
+  meta.data.keep<-colData(sce_clean[[sample]])
+  meta.data.keep<-meta.data.keep[,c("subsets_Mt_percent","Doublet.score.scran")]
+  colnames(meta.data.keep)[colnames(meta.data.keep)=="subsets_Mt_percent"]<-"perc.mito"
+  counts<-counts(sce_clean[[sample]])
+  rownames(counts)<-rownames(sce_clean[[sample]])
+  colnames(counts)<-colnames(sce_clean[[sample]])
+  seur_clean[[sample]] <- CreateSeuratObject(counts =counts )
+  seur_clean[[sample]]$sample <-sample
+  seur_clean[[sample]] <- AddMetaData(seur_clean[[sample]], as.data.frame(meta.data.keep))
+}
+```
+
+
+```{r,warning=FALSE}
+rm(sce)
+rm(sce_clean)
+rm(meta.data.keep)
+rm(counts)
+rm(ave.counts)
+```
+
+
+
+```{r,warning=FALSE}
+seur_clean<-seur_clean[[1]]
+```
+
+
+### Data normalization, identification of highly variable genes, scaling and PCA dimensionality reduction
+```{r,warning=FALSE}
+  seur_clean <- NormalizeData(seur_clean,verbose = F)
+  seur_clean <- FindVariableFeatures(seur_clean,verbose=F)
+  seur_clean <- ScaleData(seur_clean,verbose = F)
+  seur_clean <- RunPCA(seur_clean, features = VariableFeatures(seur_clean),verbose=F)
+```
+
+#### Determine the a number of PCs to include for downstream analysis
+A heuristic method to help us with that generates an 'Elbow plot': a ranking of principle components based on the percentage of variance explained by each one 
+```{r , fig.height = 4, fig.width = 6,warning=FALSE}
+ElbowPlot(object = seur_clean,ndims =50)
+```
+
+Another useful plot is a heatmap of the top genes driving each PC
+```{r , fig.height = 10, fig.width = 12,warning=FALSE}
+DimHeatmap(seur_clean, dims = 20:34, cells = 5000, balanced = TRUE)
+```
+Both cells and features are ordered according to their PCA scores. Setting "cells" to a number plots the 'extreme' cells on both ends of the spectrum, which dramatically speeds plotting for large datasets.
+
+Selection of the top 30 PCs:
+```{r,warning=FALSE}
+dims.use<-30
+```
+
+
+#### Run non-linear dimensional reduction (UMAP) for visualisation of the data
+```{r,warning=FALSE}
+seur_clean <- RunUMAP(seur_clean, dims = 1:dims.use, verbose=F, reduction.name = paste0("umapPC",dims.use), reduction.key =paste0("umapPC",dims.use, "_") )
+```
+
+
+
+CD45 expression
+```{r , fig.height =5, fig.width = 8,warning=FALSE}
+FeaturePlot(object = seur_clean, reduction = paste0("umapPC",dims.use),
+            features = c("Ptprc"))
+```
+XIST expression
+```{r , fig.height = 4, fig.width = 6,warning=FALSE}
+FeaturePlot(object = seur_clean, 
+            features = c("Xist"), reduction = paste0("umapPC",dims.use))
+```
+
+####  Annotate cell types for each cell using the SingleR package and the immgen reference (microarray profiles of pure mouse immune cells from the project of the same name (Heng et al. 2008 - http://www.immgen.org/ )
+```{r,warning=FALSE}
+immgen <- ImmGenData() 
+```
+```{r,warning=FALSE}
+singler.res<-SingleR(test = GetAssayData(seur_clean, slot="data"), ref = immgen, labels=immgen$label.main)
+head(singler.res)
+```
+
+```{r,warning=FALSE}
+seur_clean$singler.immgen.main<-singler.res[rownames(seur_clean[[]]),"pruned.labels"]
+```
+```{r,warning=FALSE}
+rm(singler.res)
+```
+
+```{r , fig.height = 8, fig.width = 12,warning=FALSE}
+DimPlot(object = seur_clean, group.by = "singler.immgen.main",label=T, repel=T, cols=cols.use, reduction = paste0("umapPC",dims.use))+ggtitle("singler.immgen.main")
+```
+
+
+
+
+Visualize QC metrics per cell
+```{r , fig.height = 8, fig.width = 12,warning=FALSE}
+FeaturePlot(object = seur_clean,
+            features = c("nCount_RNA", "nFeature_RNA", "perc.mito"))
+```
+
+
+```{r , fig.height =4, fig.width = 6,warning=FALSE}
+FeaturePlot(object = seur_clean,
+            features = c("Doublet.score.scran"), max.cutoff = "q95")
+```
+
+
+### Add metadata from the Brain immune atlas (https://www.brainimmuneatlas.org/data_files/toDownload/annot_JP3233.csv)
+```{r}
+rownames( metadata)=metadata$cell
+metadata=metadata[metadata$sample=="ActD",]
+ncol(seur_clean)
+nrow(metadata)
+length(intersect(rownames(metadata), colnames(seur_clean)))
+```
+
+```{r}
+metadata=metadata[intersect(rownames(metadata), colnames(seur_clean)),]
+seur_clean$Manuscript_cell_type=NA
+seur_clean$Manuscript_cell_type[rownames(metadata)]=metadata$cluster
+seur_clean$Manuscript_cell_type=plyr::mapvalues(seur_clean$Manuscript_cell_type, from="",to="Unkn")
+```
+
+```{r , fig.height = 8, fig.width = 12,warning=FALSE}
+DimPlot(object = seur_clean, group.by = "Manuscript_cell_type",label=T, repel=T, cols=cols.use, reduction = paste0("umapPC",dims.use))
+```
+
+
+### Clustering with varying the resolution
+```{r ,warning=FALSE}
+seur_clean <- FindNeighbors(seur_clean, dims = 1:dims.use, graph.name =paste0("RNA_snn_PC",dims.use) , verbose=F)
+for ( i in seq(0,2, 0.25))
+seur_clean <- FindClusters(seur_clean, resolution = i, verbose=F, algorithm = 4, graph.name =paste0("RNA_snn_PC",dims.use) )
+# algorithm= 4 is Leiden algorithm - often performs better
+```
+
+#### Plot of a clustering tree showing the relationship between clusterings at different resolutions. (using the clustree package)
+One helpful plot for choosing a resolution is a clustering tree. To build a clustering tree we need to look at how cells move as the clustering resolution is increased. Each cluster forms a node in the tree and edges are constructed by considering the cells in a cluster at a lower resolution (say k=2) that end up in a cluster at the next highest resolution (say k=3). By connecting clusters in this way we can see how clusters are related to each other, which are clearly distinct and which are unstable. Extra information about the cells in each node can also be overlaid in order to help make the decision about which resolution to use. 
+```{r , fig.height = 8, fig.width = 10,warning=FALSE}
+clustree(seur_clean, prefix = paste0("RNA_snn_PC",dims.use,"_res."))+
+   ggtitle(paste0("Clustering tree PC =",dims.use))
+```
+The clustering seems to be relatively stable until resolution 1.25
+
+```{r , fig.height = 10, fig.width =12,warning=FALSE}
+plot<-list()
+for ( res in c(0.5, 0.75,1,1.25))
+plot[[as.character(res)]]<-DimPlot(seur_clean, pt.size = 1,label=T,repel=T, group.by = paste0("RNA_snn_PC",dims.use,"_res.",res), reduction = paste0("umapPC",dims.use)) +
+   ggtitle(paste("res=",res))
+plot_grid(plotlist=plot)
+```
+
+
+### Let's find differentially expressed genes per cluster for resolution=1 
+```{r,warning=FALSE}
+res=1
+Idents(seur_clean)= paste0("RNA_snn_PC",dims.use,"_res.",res)
+DEgenes_list<-list()
+for ( i in levels(Idents(seur_clean))){
+DEgenes_list[[i]]<-  find.markers.detailed(seur_clean,ident.1.use=i, ensembl=mouse,dataset.name=sample.names,min.cells.group.use=2, pseudocount = 0.1,max.cells.per.ident.use = 1000)
+}
+saveRDS(DEgenes_list, paste0( path,"results/DEgenesPC",dims.use,".res",res,"_",sample.names,".rds"))
+```
+
+```{r,warning=FALSE}
+res=1
+DEgenes_list <- readRDS(paste0( path,"results/",folder.name,"/DEgenesPC",dims.use,".res",res,"_",sample.names,".rds"))
+```
+
+```{r , fig.height =10, fig.width =12,warning=FALSE}
+features.use=unlist(lapply(DEgenes_list, function(x) { head(x[x$avg_logFC>0,]$gene)}))
+DoHeatmap(seur_clean, features = features.use, assay = "RNA", angle = 90, label =T, size=4) +
+  scale_fill_gradient2(low = "blue", mid = "white",high = "red")+
+  theme(axis.text.y= element_text(size=10))+
+  ggtitle(paste("PC=",dims.use," res=",res))
+```
+
+
+```{r , fig.height =5, fig.width =7,warning=FALSE}
+DimPlot(seur_clean, pt.size = 1,label=T,repel=T, reduction = paste0("umapPC",dims.use)) +
+  ggtitle(paste("PC=",dims.use," res=",res))
+```
+```{r , fig.height = 6, fig.width = 8,warning=FALSE}
+VlnPlot(object = seur_clean,
+            features = c("nCount_RNA", "nFeature_RNA", "perc.mito","Doublet.score.scran"), ncol = 2)
+```
+
+
+Monocytic/Macrophage markers
+```{r , fig.height = 8, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c("Ly6c2","Ccr2","Ms4a7","Ear2","Ace")) 
+```
+Microglia markers
+```{r , fig.height = 8, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c("Sparc","Sall1","P2ry12","Cst7","Axl","Mki67")) 
+```
+DC markers
+```{r , fig.height = 8, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c( "Flt3","Cacnb3","Cd209a","Clec4c","Xcr1","Ccr9","Lilra4","Clec4c")) 
+```
+Granulocyte markers
+```{r , fig.height = 8, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c( "Ly6g", "S100a8","G0s2","Clec4d","Ms4a2","Fcer1a","Cpa3 ")) 
+```
+
+T, NK, B markers
+```{r , fig.height =8, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c( "Cd3e", "Foxp3", "Cd8a", "Rorc","Klrb1c","Ncr1","Jchain","Ms4a1"), pt.size = 0.2) 
+```
+
+ILC2  markers
+```{r , fig.height =8, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c( "Rora", "Il2ra", "Thy1", "Atxn1","Il7rb","Il7r","Il1rl1","Hs3st1"), pt.size = 0.2) 
+```
+
+Endothelial/epithelial/fibroblast markers
+```{r , fig.height =6, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c("Ly6c1","Kdr","Plvap","Col1a1"), pt.size = 0.2) 
+```
+
+```{r , fig.height =5, fig.width =7,warning=FALSE}
+DimPlot(seur_clean,label=T,repel=T, reduction = paste0("umapPC",dims.use)) +
+  ggtitle(paste("PC=",dims.use," res=",res))
+```
+
+```{r , fig.height = 4, fig.width =10}
+DotPlot(seur_clean,features=c( "Sparc","Sall1","P2ry12","Tmem119","Ms4a7","Pf4", "Ly6c2","Plac8", "Fn1","Ccr2","Ear2","Ace",  "Ly6g","S100a8","Flt3","Cd209a","Xcr1","Clec9a","Ccr7","Cacnb3","Siglech","Pacsin1", "Mki67","Stmn1","Cd3e", "Trac","Cd8a", "Klrb1c","Ncr1","Cd19","Ms4a1", "Kdr","Ly6c1","Col1a1","Col1a2" , "perc.mito"))+RotatedAxis()
+```
+
+
+
+```{r,warning=FALSE}
+Idents(seur_clean) <- plyr::mapvalues(x = Idents(seur_clean), from = 1:length(unique(Idents(seur_clean))), 
+              to = c("BAM 1","BAM 2","BAM 3","NK","BAM 4","DC","CPepi 1","Prolif","BAM NK doublets","CPepi 2",
+                     "T","Mac","BAM T doublets","cDC2","Mono Neutro","B","Endothelial Fibroblasts"))
+```
+
+
+
+```{r , fig.height =5, fig.width = 8 ,warning=FALSE}
+DimPlot(seur_clean,  reduction = paste0("umapPC",dims.use),
+        cols=cols.use, 
+     pt.size = 1,repel =T,label=T)
+```
+
+##### Select manually migDC, neutro, endothelial, fibroblasts, ILC and 2 small clusters
+select.cells=CellSelector(plot=FeaturePlot(seur_clean, c("Ly6g"), pt.size = 0.2, reduction = paste0("umapPC",dims.use)) )
+Idents(seur_clean, cells=select.cells)="Neutro"
+Idents(seur_clean, cells=WhichCells(seur_clean, idents="Mono Neutro"))="Mono"
+select.cells=CellSelector(plot=FeaturePlot(seur_clean, c("Cacnb3"), pt.size = 0.2, reduction = paste0("umapPC",dims.use)) )
+Idents(seur_clean, cells=select.cells)="migDC"
+Idents(seur_clean, cells=WhichCells(seur_clean, idents="migDC cDC1"))="cDC1"
+select.cells=CellSelector(plot=FeaturePlot(seur_clean, c("Kdr"), pt.size = 0.2, reduction = paste0("umapPC",dims.use)) )
+Idents(seur_clean, cells=select.cells)="Endothelial"
+Idents(seur_clean, cells=WhichCells(seur_clean, idents="Endothelial Fibroblasts"))="Fibroblasts"
+select.cells=CellSelector(plot=FeaturePlot(seur_clean, c("Il2ra"), pt.size = 0.2, reduction = paste0("umapPC",dims.use)) )
+Idents(seur_clean, cells=select.cells)="ILC"
+select.cells=CellSelector(plot=FeaturePlot(seur_clean, c("Cd3e"), pt.size = 0.2, reduction = paste0("umapPC",dims.use)) )
+Idents(seur_clean, cells=select.cells)=1
+select.cells=CellSelector(plot=DimPlot(seur_clean,  reduction = paste0("umapPC",dims.use),cols=cols.use) )
+Idents(seur_clean, cells=select.cells)=2
+
+
+```{r , fig.height =4, fig.width = 4 ,warning=FALSE}
+DimPlot(seur_clean,  reduction = paste0("umapPC",dims.use),sizes.highlight = 0.3,
+        cells.highlight = WhichCells(seur_clean, idents = 1))+ggtitle("Manually selected cells 1")+NoLegend()
+```
+
+```{r}
+DEG_1=FindMarkers(seur_clean, ident.1 = 1, max.cells.per.ident = 500, only.pos = T,verbose = F)
+head(DEG_1)
+```
+
+
+```{r}
+Idents(seur_clean, cells=WhichCells(seur_clean, idents=1))="gdT"
+```
+
+```{r , fig.height =4, fig.width = 4 ,warning=FALSE}
+DimPlot(seur_clean,  reduction = paste0("umapPC",dims.use),sizes.highlight = 0.3,
+        cells.highlight = WhichCells(seur_clean, idents = 2))+ggtitle("Manually selected cells 2")+NoLegend()
+```
+
+```{r}
+DEG_2=FindMarkers(seur_clean, ident.1 = 2, max.cells.per.ident = 500, only.pos = T,verbose = F)
+head(DEG_2,20)
+```
+
+Neuron markers
+```{r , fig.height =3, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c("Thy1","Tbr1","Spink8","Gad1", "Homer1"), pt.size = 0.2) 
+```
+Oligodendrocytes markers
+```{r , fig.height =3, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c("Mbp","Olig2","Plp1","Sox4", "Sox11"), pt.size = 0.2) 
+```
+Epithelial markers
+```{r , fig.height =6, fig.width =10,warning=FALSE}
+FeaturePlot(seur_clean, c("Krt19","Slc12a2","Wfdc2","Krt18", "Krt8","Prlr","Gpx3"), pt.size = 0.2) 
+```
+
+
+```{r}
+Idents(seur_clean, cells=WhichCells(seur_clean, idents=2))="Epithelial"
+seur_clean$annot=Idents(seur_clean)
+```
+
+
+```{r , fig.height =6, fig.width = 10 ,warning=FALSE}
+DimPlot(seur_clean,  reduction = paste0("umapPC",dims.use),
+        cols=cols.use,repel =T,label=T)
+```
+
+```{r}
+seurnodbl=seur_clean[,WhichCells(seur_clean, idents = c("BAM NK doublets","BAM T doublets"), invert = T)]
+dim(seur_clean)
+dim(seurnodbl)
+```
+
+### Rerun Data normalization, identification of HVG, scaling,PCA and UMAP
+```{r,warning=FALSE}
+  seurnodbl <- NormalizeData(seurnodbl,verbose = F)
+  seurnodbl <- FindVariableFeatures(seurnodbl,verbose=F)
+  seurnodbl <- ScaleData(seurnodbl,verbose = F)
+  seurnodbl <- RunPCA(seurnodbl, features = VariableFeatures(seurnodbl),verbose=F)
+```
+
+```{r , fig.height = 4, fig.width = 6,warning=FALSE}
+ElbowPlot(object = seurnodbl,ndims =50)
+```
+
+```{r , fig.height = 10, fig.width = 12,warning=FALSE}
+DimHeatmap(seurnodbl, dims = 20:34, cells = 5000, balanced = TRUE)
+```
+Both cells and features are ordered according to their PCA scores. Setting "cells" to a number plots the 'extreme' cells on both ends of the spectrum, which dramatically speeds plotting for large datasets.
+
+
+```{r,warning=FALSE}
+dims.use<-30
+```
+
+
+#### Run non-linear dimensional reduction (UMAP) for visualisation of the data
+
+```{r,warning=FALSE}
+seurnodbl <- RunUMAP(seurnodbl, dims = 1:dims.use, verbose=F, reduction.name = paste0("umapPC",dims.use), reduction.key =paste0("umapPC",dims.use, "_") )
+```
+
+```{r , fig.height =6, fig.width = 10 ,warning=FALSE}
+DimPlot(seurnodbl,  reduction = paste0("umapPC",dims.use),
+        cols=cols.use, 
+     pt.size = 1,repel =T,label=T)+ggtitle("Doublets removed")
+```
+
+#### Subset proliferating cells
+```{r,warning=FALSE, echo=FALSE}
+subset.name="Prolif_cells" 
+clusters<-"Prolif" 
+clusters[!clusters %in% Idents(seurnodbl)] #check if some of the cluster names is not correct
+```
+Subset the cells
+```{r,warning=FALSE, echo=FALSE}
+seur<-seurnodbl[,WhichCells(seurnodbl, idents=clusters)]
+seur$full.dataset.annot=Idents(seur)
+```
+
+
+Remove genes that are not expressed in any cell
+```{r,warning=FALSE, echo=FALSE}
+num.cells.per.gene <- rowSums(as.matrix(GetAssayData(seur, slot = "counts")) > 0)
+  genes.use <- names(num.cells.per.gene[which(num.cells.per.gene >= 1)])
+  seur<-subset(seur,features=genes.use)
+```
+```{r,warning=FALSE}
+cat("genes/cells of full data : \n",dim(seurnodbl))
+cat("\ngenes/cells of subset : \n",dim(seur))
+```
+
+#### Standard preprocessing and UMAP of the subsetted dataset (Selecting variable genes, scaling, PCA, UMAP )
+```{r,warning=FALSE, echo=FALSE}
+seur <- NormalizeData(seur,verbose = F)
+seur <- FindVariableFeatures(seur,verbose=F)
+seur <- ScaleData(seur,verbose = F)
+seur <- RunPCA(seur, features = VariableFeatures(seur),verbose=F, npcs =80)
+```
+```{r , fig.height = 4, fig.width = 10,warning=FALSE, echo=FALSE}
+ElbowPlot(object = seur,ndims =80)
+```
+```{r,warning=FALSE, echo=FALSE}
+dims.use=40
+```
+```{r,warning=FALSE, echo=FALSE}
+seur <- RunUMAP(seur, dims = 1:dims.use, verbose=F,reduction.name =paste0("umapPC",dims.use),reduction.key =paste0("umapPC",dims.use,"_"))
+```
+
+```{r , fig.height = 4, fig.width = 8,warning=FALSE}
+DimPlot(object = seur, group.by = "singler.immgen.main",label=T, repel=T, cols=cols.use,reduction=paste0("umapPC",dims.use))+ggtitle(paste0("singler.immgen.main: ", subset.name))
+```
+```{r ,warning=FALSE}
+seur <- FindNeighbors(seur, dims = 1:dims.use, verbose=F,graph.name =paste0("RNA_snn_PC",dims.use), k.param =10)
+res=1
+seur <- FindClusters(seur, resolution = res, verbose=F, algorithm = 4,graph.name =paste0("RNA_snn_PC",dims.use))
+# algorithm= 4 is Leiden algorithm - often performs better
+```
+
+
+
+```{r , fig.height = 4, fig.width =5,warning=FALSE}
+DimPlot(seur, pt.size = 1,label=T,repel=T, group.by = paste0("RNA_snn_PC",dims.use,"_res.",res),reduction=paste0("umapPC",dims.use)) +
+   ggtitle(paste("res=",res))
+```
+
+```{r , fig.height = 8, fig.width =12,warning=FALSE}
+FeaturePlot(seur, c("Fn1","Ear2","Ms4a7","P2ry12", "Flt3", "Xcr1", "Cd209a","Ly6g","Cd3e","Trac","Klrb1c", "Cd19"),reduction=paste0("umapPC",dims.use)) 
+```
+```{r , fig.height = 6, fig.width =8,warning=FALSE}
+FeaturePlot(seur, c("Fn1","Ly6c2","Ccr2","Cd3e"),reduction=paste0("umapPC",dims.use)) 
+```
+```{r , fig.height = 6, fig.width =8,warning=FALSE}
+VlnPlot(seur, c("Ms4a7","P2ry12", "Flt3","Cd3e","Trac","Klrb1c")) 
+```
+
+```{r,warning=FALSE}
+Idents(seur) <- plyr::mapvalues(x = Idents(seur), from = 1:5, 
+                                         to = c("BAM prolif","BAM prolif","NK prolif", "CPepi prolif", "T prolif"))
+```
+
+
+#### Select and annotate the cells manually
+select.cells=CellSelector(plot=FeaturePlot(seur, c("Flt3"),reduction=paste0("umapPC",dims.use)) )
+Idents(seur, cells=select.cells)="DC prolif"
+select.cells=CellSelector(plot=FeaturePlot(seur, c("Cd19"),reduction=paste0("umapPC",dims.use)) )
+Idents(seur, cells=select.cells)="B"
+select.cells=CellSelector(plot=FeaturePlot(seur, c("Fn1"),reduction=paste0("umapPC",dims.use)) )
+Idents(seur, cells=select.cells)="Mono"
+
+```{r , fig.height = 4, fig.width = 6,warning=FALSE}
+DimPlot(object = seur,label=T, repel=T, cols=cols.use,reduction=paste0("umapPC",dims.use))+ggtitle(subset.name)
+```
+```{r, echo=FALSE}
+for(i in unique(Idents(seur))){
+  Idents(seurnodbl,cells=WhichCells(seur,idents = i))=i
+}
+```
+
+
+```{r, echo=FALSE}
+saveRDS(seur,paste0(path,"results/",subset.name,"_",sample.names,".seurat.rds"))
+```
+```{r, echo=FALSE}
+seur<-readRDS(paste0(path,"results/",subset.name,"_",sample.names,".seurat.rds"))
+
+```
+
+
+
+```{r , fig.height =8, fig.width = 10 ,warning=FALSE}
+dims.use=30
+DimPlot(seurnodbl,  reduction = paste0("umapPC",dims.use),
+        cols=cols.use, 
+     pt.size = 1,repel =T,label=T)+ggtitle("Doublets removed")
+```
+
+### check again for doublets
+ max.cutoff = "q95"
+```{r , fig.height =4, fig.width = 6,warning=FALSE}
+FeaturePlot(object = seurnodbl,pt.size = 0.3,
+            features = c("Doublet.score.scran"), max.cutoff = "q95")
+```
+```{r , fig.height =6, fig.width = 8,warning=FALSE}
+FeaturePlot(object = seurnodbl,
+            features = c("Ms4a7"))
+```
+
+```{r , fig.height =6, fig.width = 8,warning=FALSE}
+FeaturePlot(object = seurnodbl,
+            features = c("Sparc"))
+```
+
+select.cells=CellSelector(plot=FeaturePlot(seurnodbl, c("Ms4a7"),reduction=paste0("umapPC",dims.use)) )
+Idents(seurnodbl, cells=select.cells)="DC BAM doublets?"
+select.cells=CellSelector(plot=FeaturePlot(seurnodbl, c("Ms4a7"),reduction=paste0("umapPC",dims.use)) )
+Idents(seurnodbl, cells=select.cells)="B BAM doublets"
+
+```{r}
+seur_clean<-renameSeuratfromSubset.v3(seur_clean,seurnodbl)
+seurnodbl=seurnodbl[,WhichCells(seurnodbl, idents = c("B BAM doublets"), invert = T)]
+dim(seur_clean)
+dim(seurnodbl)
+```
+### Rerun data normalization, identification of HVG, scaling,PCA and UMAP
+```{r,warning=FALSE}
+  seurnodbl <- NormalizeData(seurnodbl,verbose = F)
+  seurnodbl <- FindVariableFeatures(seurnodbl,verbose=F)
+  seurnodbl <- ScaleData(seurnodbl,verbose = F)
+  seurnodbl <- RunPCA(seurnodbl, features = VariableFeatures(seurnodbl),verbose=F)
+```
+
+```{r , fig.height = 4, fig.width = 6,warning=FALSE}
+ElbowPlot(object = seurnodbl,ndims =50)
+```
+
+```{r , fig.height = 10, fig.width = 12,warning=FALSE}
+DimHeatmap(seurnodbl, dims = 20:34, cells = 5000, balanced = TRUE)
+```
+
+
+
+```{r,warning=FALSE}
+dims.use<-30
+```
+
+
+#### Run non-linear dimensional reduction (UMAP) for visualisation of the data
+```{r,warning=FALSE}
+seurnodbl <- RunUMAP(seurnodbl, dims = 1:dims.use, verbose=F, reduction.name = paste0("umapPC",dims.use), reduction.key =paste0("umapPC",dims.use, "_") )
+```
+
+```{r , fig.height =6, fig.width = 8,warning=FALSE}
+FeaturePlot(object = seurnodbl,reduction = paste0("umapPC",dims.use),
+            features = c("Ms4a7"))
+```
+
+```{r , fig.height =6, fig.width = 10 ,warning=FALSE}
+dims.use=30
+DimPlot(seurnodbl,  reduction = paste0("umapPC",dims.use),
+        cols=cols.use,repel =T,label=T)+ggtitle("Doublets removed")
+```
+
+```{r,warning=FALSE, echo=FALSE}
+Idents(seurnodbl)=factor(Idents(seurnodbl), levels = c("BAM 1","BAM 2" ,"BAM 3" ,"BAM 4" ,"BAM 5","BAM prolif" ,"CPepi 1" ,"CPepi 2","CPepi prolif" , "cDC1","cDC2","migDC" , "DC prolif","DC BAM doublets?" ,"Mono" ,"Neutro", "T","T prolif", "gdT",  "NK","NK prolif"  ,"B"  ,"ILC"  , "Endothelial" , "Epithelial","Fibroblasts"        ))
+```
+
+### Let's find differentially expressed genes per cluster for resolution=1 
+```{r,warning=FALSE, echo=FALSE}
+DEgenes_list<-list()
+for ( i in levels(Idents(seurnodbl))){
+DEgenes_list[[i]]<-  find.markers.detailed(seurnodbl,ident.1.use=i, ensembl=mouse,dataset.name=sample.names,min.cells.group.use=2, pseudocount = 0.1,max.cells.per.ident.use = 1000)
+}
+saveRDS(DEgenes_list, paste0( path,"results/DEgenesPC",dims.use,".res",res,"_",sample.names,".no.doublets.annot.rds"))
+```
+
+```{r,warning=FALSE, echo=FALSE}
+res=1
+dims.use=30
+DEgenes_list <- readRDS(paste0( path,"results/DEgenesPC",dims.use,".res",res,"_",sample.names,".no.doublets.annot.rds"))
+```
+```{r,warning=FALSE, echo=FALSE}
+names(DEgenes_list)[names(DEgenes_list)=="DC BAM doublets?"]="DC BAM doublets"
+```
+```{r,warning=FALSE, echo=FALSE}
+### Save as excel table
+setwd(paste0(path,"results"))
+first_sheet_name<-names(DEgenes_list)[1]
+#JAVA specific garbage collection 
+jgc <- function() {
+  rJava::.jcall("java/lang/System", method = "gc")
+ } 
+#Create the excel file and add the first sheet
+xlsx::write.xlsx2(DEgenes_list[[first_sheet_name]], file=paste0("DEgenesPC",dims.use,".res",res,"_",sample.names,".no.doublets.annot.xlsx"), sheetName=first_sheet_name, row.names=FALSE)
+#Add the remaining sheets tot he excel file
+for ( i in names(DEgenes_list)[names(DEgenes_list)!=first_sheet_name]) {
+  gc()
+  jgc()
+  message("Adding sheet ", i)
+ xlsx:: write.xlsx2(DEgenes_list[[i]], file=paste0("DEgenesPC",dims.use,".res",res,"_",sample.names,".no.doublets.annot.xlsx"), sheetName=i, append=TRUE, row.names=FALSE)
+}
+```
+
+```{r , fig.height =6, fig.width =13,warning=FALSE}
+features.use=unlist(lapply(DEgenes_list, function(x) { head(x[x$avg_logFC>0,]$gene,2)}))
+features.use=c("Ms4a7",features.use)
+features.use=features.use[!duplicated(features.use)]
+names(features.use)=NULL
+DotPlot(seurnodbl, features = features.use) +
+  scale_color_gradient2(low = "blue", mid = "white",high = "red")+RotatedAxis()
+```
+```{r , fig.height =6, fig.width = 8 ,warning=FALSE}
+DimPlot(seurnodbl,  reduction = paste0("umapPC",dims.use),group.by = "Manuscript_cell_type",
+        cols=cols.use,repel =T,label=T)+ggtitle("Manuscript cell types")
+```
+```{r , fig.height =6, fig.width = 10 ,warning=FALSE}
+DimPlot(seurnodbl,  reduction = paste0("umapPC",dims.use),
+        cols=cols.use,repel =T,label=T)+ggtitle("Doublets removed")
+```
+
+```{r}
+saveRDS(seur_clean,paste0(path,"/results/",sample.names,".seurat.rds"))
+```
+```{r}
+seur_clean<-readRDS(paste0(path,"/results/",sample.names,".seurat.rds"))
+```
+```{r}
+saveRDS(seurnodbl,paste0(path,"/results/",sample.names,".seurat.no.doublets.rds"))
+```
+```{r}
+seurnodbl<-readRDS(paste0(path,"/results/",sample.names,".seurat.no.doublets.rds"))
+```
+```{r,warning=FALSE}
+dim(seurnodbl)
+```
+
+
+  
+```{r,warning=FALSE}
+sessionInfo()
+```
