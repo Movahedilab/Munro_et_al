@@ -1,6 +1,6 @@
 # Munro_et_al
 
-This repository contains the code used for analyzing the choroid plexus scRNAseq data in Munro et al. (2022)
+This repository contains the code used for analyzing the choroid plexus scRNAseq data, visualized in Figure 2 of Munro et al. (Macrophage compartmentalisation in the brain and cerebrospinal fluid system, Science Immunology, 2022)
 
 ### Code
 - I.RNA_preprocessing.Rmd - code for data QC, normalization, clustering and cell typing of the Cd45+ choroid plexus dataset
@@ -10,11 +10,10 @@ This repository contains the code used for analyzing the choroid plexus scRNAseq
 
 ### Primary contact: 
 ##### Kiavash Movahedi, PhD 
-Team Leader\
-Myeloid Cell Immunology Lab\
-VIB Inflammation Research Center (IRC)\
+Professor\
+Laboratory for Molecular and Cellular Therapy\ 
 Vrije Universiteit Brussel\
-Pleinlaan 2, 1050 Brussels, Belgium\
+Laarbeeklaan 103, Brussels Belgium\
 kiavash.movahedi@vub.be
 
 ### Questions about the code: 
